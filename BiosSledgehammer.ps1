@@ -26,7 +26,7 @@ param(
 
 
 #Script version
-$scriptversion="3.2.5"
+$scriptversion="3.3.0"
 
 #This script requires PowerShell 4.0 or higher 
 #requires -version 4.0
@@ -92,7 +92,8 @@ Set-Variable BCU_EXE_SOURCE "$PSScriptRoot\BCU-4.0.21.1\BiosConfigUtility64.exe"
   #Set-Variable BCU_EXE "$PSScriptRoot\4.0.15.1\EchoArgs.exe" -option ReadOnly -Force
 
 #Configute which ISA00075 version to use
-Set-Variable ISA75DT_EXE_SOURCE "$PSScriptRoot\ISA75DT-1.0.3.215\Windows\Intel-SA-00075-console.exe" -option ReadOnly -Force
+#Set-Variable ISA75DT_EXE_SOURCE "$PSScriptRoot\ISA75DT-1.0.1.39\Windows\Intel-SA-00075-console.exe" -option ReadOnly -Force
+Set-Variable ISA75DT_EXE_SOURCE "$PSScriptRoot\ISA75DT-1.0.3.215\Intel-SA-00075-console.exe" -option ReadOnly -Force
 
 
 #For performance issues (AV software that keeps scanning EXEs from network) we copy BCU locally
@@ -1069,9 +1070,13 @@ function Update-BiosSettings()
   [string]$PasswordFile=""
  )
 
+ $displayText="BIOS Settings"
  $settingsfile="$modelfolder\BIOS-Settings.txt"
+ 
 
- $result=Update-BiosSettingsEx -ConfigFileFullPath $settingsfile -Displaytext "BIOS Settings" -PasswordFile $PasswordFile -IgnoreNonExistingConfigFile 
+ Write-HostSection -Start $displayText
+ $result=Update-BiosSettingsEx -ConfigFileFullPath $settingsfile -PasswordFile $PasswordFile -IgnoreNonExistingConfigFile 
+ Write-HostSection -End $displayText
 
  return $result
 }
@@ -1087,9 +1092,12 @@ function Set-UEFIBootMode()
   [string]$PasswordFile=""
  )
 
+ $displayText="Activate UEFI Boot Mode"
  $settingsfile="$modelfolder\Activate-UEFIBoot.txt"
 
- $result=Update-BiosSettingsEx -ConfigFileFullPath $settingsfile -Displaytext "Activate UEFI Boot Mode" -PasswordFile $PasswordFile
+ Write-HostSection -Start $displayText
+ $result=Update-BiosSettingsEx -ConfigFileFullPath $settingsfile -PasswordFile $PasswordFile
+ Write-HostSection -End $displayText
 
  return $result
 }
@@ -1102,20 +1110,14 @@ function Update-BiosSettingsEx()
   [ValidateNotNullOrEmpty()]
   [string]$ConfigFileFullPath,
 
-  [Parameter(Mandatory=$True, ValueFromPipeline=$False)]
-  [ValidateNotNullOrEmpty()]
-  [string]$Displaytext,
-
   [Parameter(Mandatory=$False, ValueFromPipeline=$False)]
-  [ValidateNotNullOrEmpty()]
-  [switch]$IgnoreNonExistingConfigFile,
+  [string]$PasswordFile="",
   
   [Parameter(Mandatory=$False, ValueFromPipeline=$False)]
-  [string]$PasswordFile=""
-
+  [ValidateNotNullOrEmpty()]
+  [switch]$IgnoreNonExistingConfigFile
  )
 
-    Write-HostSection -Start $Displaytext
     write-host "Reading BIOS settings from [$ConfigFileFullPath]..."
 
     $configFileExists=Test-FileExists $ConfigFileFullPath
@@ -1176,7 +1178,6 @@ function Update-BiosSettingsEx()
         }
      }
 
-    Write-HostSection -End $Displaytext
     return $result
 }
 
@@ -1346,35 +1347,43 @@ function Invoke-BitLockerDecryption()
     #we better save this all with a try-catch
     try
     {
-        #Because we do not know if we can access the BitLocker module, we try to figure it out using CIM/WMI
+        #Because we do not know if we can access the BitLocker module, we check the status using WMI/CMI
         $encryptableVolumes=Get-CIMInstance "Win32_EncryptableVolume" -Namespace "root/CIMV2/Security/MicrosoftVolumeEncryption"
                       
         $systemdrive=$env:SystemDrive
         $systemdrive=$systemdrive.ToUpper()
+
+        write-verbose "Testing if system drive $($systemdrive) is BitLocker encrypted"
 
         if ( $encryptableVolumes -ne $null) 
         {
             foreach($drivestatus in $encryptableVolumes)
             {
                 if ( $drivestatus.DriveLetter.ToUpper() -eq $systemdrive)
-                {
-                    # .EncryptionMethod is not present when bitlocker is not in use, so we need to handle this other wise it errors. 
-                    if(Get-Member -inputobject $drivestatus -name "EncryptionMethod" -Membertype Properties)
-                    {
+                {           
+                     write-verbose "Found entry for system drive"
+                               
+                     #The property ProtectionStatus will also be 0 if BitLocker was just suspended, so we can't use this property.
+                     #We go for EncryptionMethod which will report 0 if no BitLocker encryption is used
 
-                        # .ProtectionStatus will also be 0 if BitLocker was just suspended, so we can not use this property
+                     #As @GregoryMachin reported, some versions of Windows do not have this property at all so need to make sure to have access to it
+                     #See https://github.com/texhex/BiosSledgehammer/issues/21
+                     if (Get-Member -InputObject $drivestatus -Name "EncryptionMethod" -Membertype Properties)
+                     {
+                        #Some computers reported NUL/NIL as the output, so we need to make sure it's uint32 what is returned
+                        #See https://msdn.microsoft.com/en-us/library/windows/desktop/aa376434(v=vs.85).aspx
+                        if ( $drivestatus.EncryptionMethod -is [uint32])
+                        {
                             if ( $drivestatus.EncryptionMethod -ne 0 )
                             {
                                 $bitLockerActive=$true
-                                write-verbose "BitLocker is active for system drive ($systemdrive)!"
+                                write-host "BitLocker is active for system drive ($systemdrive)!"
+                            }                        
+                            else
+                            {
+                                write-verbose "BitLocker is not used"
                             }
-                    } 
-                    else 
-                    {
-                
-                    write-verbose "BitLocker is not in use for system drive ($systemdrive)!"
-                    $bitLockerActive=$False
-                
+                        }
                     }
                 }
             }
@@ -1399,6 +1408,10 @@ function Invoke-BitLockerDecryption()
 
                 write-host "Starting decryption (this might take some time)..."
                 $ignored=Disable-BitLocker -MountPoint $systemdrive
+				
+				#wait three seconds to avoid that we check the status before the decryption has started
+				Start-Sleep -Seconds 3 
+				
 
                 #Now wait for the decryption to complete
                 Do
@@ -1414,7 +1427,7 @@ function Invoke-BitLockerDecryption()
                     #During the process, the status is "DecryptionInProgress"
                     if ( $volumestatus -ne "FullyDecrypted" )
                     {
-                        write-host "  Decryption runing, $($Percentage)% remaining ($volumestatus). Waiting 15 seconds..."
+                        write-host "  Decryption in progress, $($Percentage)% remaining ($volumestatus). Waiting 15 seconds..."
                         Start-Sleep -Seconds 15
                     }
                     else
@@ -1681,91 +1694,123 @@ function Update-TPMFirmware()
 
                    #Check if it exists
                    if ( $firmwareFilesExist )
-                   {
+                   {                      
+                      #We might need to stop here, depending on the BitLockerStatus
+                      $continueTPMUpgrade=$false
 
-                      #write-host "Matching firmware file(s) found, will continue" 
 
-                      #Now we have everything we need, but we need to check if the SystemDrive (C:) is full decrypted. 
-                      #BitLocker might not be using the TPM , but I think the TPM update simply checks if its ON or not. If it detects BitLocker, it fails.
-                      $BitLockerDecrypted=Invoke-BitLockerDecryption
-                      
-                      #DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG 
-                      #$BitLockerDecrypted=$true
-                      #DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG 
-                      
-                      #Check if bitlocker is still active
-                      if (-not $BitLockerDecrypted)
+                      #In case of update scenarios, the operator can decide to just pause BitLocker encrpytion and does not want to have it fully decrypt
+                      $ignoreBitLocker=$settings["IgnoreBitLocker"]
+                                                  
+                      if ( $ignoreBitLocker -eq "Yes") 
                       {
-                            Write-Error "BitLocker is in use, TPM update not possible"
+                            write-host "BitLocker status is ignored, will continue without checking BitLocker"
+                            $continueTPMUpgrade=$true
                       }
                       else
-                      {                                      
-                            #Real update process starts here. We might need to do this two times in case two firmwares were found
-                            
-                            #$returnCode=Invoke-TPMUpdateExe -SourcePath $sourcefolder -FirmwareFile $firmwareFile_A -Hashtable $settings -PasswordFile $PasswordFile                          
-                            $returnCode=Invoke-UpdateProgram -Name "TPM firmware $(Get-FileName $firmwareFile_A)" -Settings $settings -SourcePath $sourcefolder -FirmwareFile $firmwareFile_A -PasswordFile $PasswordFile
+                      {
+                            #Now we have everything we need, but we need to check if the SystemDrive (C:) is full decrypted. 
+                            #BitLocker might not be using the TPM , but I think the TPM update simply checks if its ON or not. If it detects BitLocker, it fails.
+                            $BitLockerDecrypted=Invoke-BitLockerDecryption
 
-                            if ( $returnCode -eq $null )
+                            if ($BitLockerDecrypted)
                             {
-                                #In this case, no second execution will be done because something completly failed. 
-                                write-error "TPM update failed!"
+                                $continueTPMUpgrade=$true                                
                             }
                             else
                             {
-                                #If it's not null, we have two options:
+                                write-Error "BitLocker is in use, TPM update not possible"
+                            }
+                      }
+                                           
+                      #DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG 
+                      #$continueTPMUpgrade=$true
+                      #DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG 
+                      
+                      if ($continueTPMUpgrade)
+                      {                
+                            #Maybe we have a BIOS that requires BIOS settings to allow the TPM update, e.g. TXT and SGX for G3 Models with BIOS 1.16 or higher                                                                                                                          
+                            $displayText="BIOS Settings for TPM Update"
+                            $tpmBIOSSettingsFile="$ModelFolder\TPM-BIOS-Settings.txt"   
+                                                        
+                            Write-HostSection -Start $displayText
+                            
+                            $biosChanges=-1
+                            $biosChanges=Update-BiosSettingsEx -ConfigFileFullPath $tpmBIOSSettingsFile -PasswordFile $PasswordFile -IgnoreNonExistingConfigFile
+                                                        
+                            Write-HostSection -End $displayText -NoEmptyLineAtEnd
 
-                                # (A) Only a single firmware file exist: Assume any return code is OK
-                                $updateSuccess=$false
 
-                                if ( -not (Test-String -HasData $firmwareFile_B) )
+                            if ( $biosChanges -lt 0 )
+                            {
+                                write-error "BIOS changes failed, can not continue"
+                            }
+                            else
+                            {
+                                #
+                                #Real update process starts here. We might need to do this two times in case two firmwares were found                            
+                                #
+                                $returnCode=Invoke-UpdateProgram -Name "TPM firmware $(Get-FileName $firmwareFile_A)" -Settings $settings -SourcePath $sourcefolder -FirmwareFile $firmwareFile_A -PasswordFile $PasswordFile
+
+                                if ( $returnCode -eq $null )
                                 {
-                                    $updateSuccess=$true
+                                    #In this case, no second execution will be done because something completly failed. 
+                                    write-error "TPM update failed!"
                                 }
                                 else
                                 {
-                                    # (B) Two firmware file exist: If return code is 275 (firmware image wrong), try again with the second firmware file
-                                    if ( $returnCode -ne 275 )
+                                    #If it's not null, we have two options:
+
+                                    # (A) Only a single firmware file exist: Assume any return code is OK
+                                    $updateSuccess=$false
+
+                                    if ( -not (Test-String -HasData $firmwareFile_B) )
                                     {
-                                        #Different return code than 275, most likely the command was a success
                                         $updateSuccess=$true
                                     }
                                     else
                                     {
-                                        #Return code was 275 - repeat with firmwareFile_B
-                                        write-host "TPM update returned invalid firmware file, retrying with second firmware file..."
-                                        
-                                        $returnCode=Invoke-UpdateProgram -Name "TPM firmware $(Get-FileName $firmwareFile_B)" -Settings $settings -SourcePath $sourcefolder -FirmwareFile $firmwareFile_B -PasswordFile $PasswordFile
-
-                                        if ( $returnCode -eq $null )
+                                        # (B) Two firmware file exist: If return code is 275 (firmware image wrong), try again with the second firmware file
+                                        if ( $returnCode -ne 275 )
                                         {
-                                            #Well, that didn't worked...
-                                            write-error "TPM update failed!"
+                                            #Different return code than 275, most likely the command was a success
+                                            $updateSuccess=$true
                                         }
                                         else
                                         {
-                                            $updateSuccess=$true
-                                        }
-                                    }                                                                        
-                                }
+                                            #Return code was 275 - repeat with firmwareFile_B
+                                            write-host "TPM update returned invalid firmware file, retrying with second firmware file..."
+                                        
+                                            $returnCode=Invoke-UpdateProgram -Name "TPM firmware $(Get-FileName $firmwareFile_B)" -Settings $settings -SourcePath $sourcefolder -FirmwareFile $firmwareFile_B -PasswordFile $PasswordFile
+
+                                            if ( $returnCode -eq $null )
+                                            {
+                                                #Well, that didn't worked...
+                                                write-error "TPM update failed!"
+                                            }
+                                            else
+                                            {
+                                                $updateSuccess=$true
+                                            }
+                                        }                                                                        
+                                    }
 
 
-                                if ( $updateSuccess -eq $true )
-                                {
-                                    write-host "TPM update success"
-                                    $result=$True
-                                }
-                                else
-                                {                                    
-                                    write-error "Running TPM update command failed!"
-                                    $result=$null
-                                }
+                                    if ( $updateSuccess -eq $true )
+                                    {
+                                        write-host "TPM update success"
+                                        $result=$True
+                                    }
+                                    else
+                                    {                                    
+                                        write-error "Running TPM update command failed!"
+                                        $result=$null
+                                    }
 
                                 
-                            }
+                                }
 
-                            ###always set result to TRUE so we return a 3010 code
-                            ##$result=$true
-                                                 
+                            }                                                 
                       }
                    }
                 }
@@ -2236,12 +2281,11 @@ function Update-MEFirmware()
     $tempFolder=Get-TempFolder
     $runToolOK=$false
   
-    #We use the XML output method, so the tool will generate a file called [DEVICENAME]_System_Summary.xml.
-    #We need to make sure that no other *_System_Summary.xml file exists
-    $CompName=$env:computername
-    $xmlFilePattern="$CompName.xml"
+    #We use the XML output method, so the tool will generate a file called [DEVICENAME].xml.    
+    $xmlFilename="$tempFolder\$($env:computername).xml"
  
-    $ignored=Remove-Item -Path "$tempFolder\$xmlFilePattern" -Force -ErrorAction SilentlyContinue
+    #If a file by the name already exists, delete it
+    $ignored=Remove-Item -Path $xmlFilename -Force -ErrorAction SilentlyContinue
     
     try
     {
@@ -2262,18 +2306,15 @@ function Update-MEFirmware()
         #Output console output to make sure we have something in the log even if the XML parsing fails
         Write-HostOutputFromProgram -Name "Discovery Tool Output" -Content $runToolResult
 
-        write-host "Processing XML output ($tempFolder\$xmlFilePattern)..."
-        
-        #Read the XML output
-        $files=Get-ChildItem -Path $tempFolder -File -Filter $xmlFilePattern -Force 
-        if ( $files -eq $null )
+        write-host "Processing XML result [$xmlFilename]..."        
+
+        if ( -not (Test-FileExists $xmlFilename) ) 
         {
             write-error "XML file not found!"
         }
         else
         {
-            $xmlFilename=$files[0].FullName            
-            $MEData=[PSObject]@{"Parsed"=$false; "VersionText"="0.0.0"; "VersionParsed"=$false; "FeatureLevel"="Unkown"; "Provisioned"="Unknown"; "VulnerableText"="Unknown"; "Vulnerable"=$false; "ExposedText"="Unknown"; "Exposed"=$false; "DriverInstalled"=$false }
+            $MEData=[PSObject]@{"Parsed"=$false; "VersionText"="0.0.0"; "VersionParsed"=$false; "FeatureLevel"="Unkown"; "Provisioned"="Unknown"; "VulnerableText"="Unknown"; "Vulnerable"=$false; "ExposedText"="Unknown"; "DriverInstalled"=$false }
 
             try 
             {
@@ -2290,9 +2331,9 @@ function Update-MEFirmware()
                     $MEData.VersionParsed=$true
                 }
                 
-                #$MEData.FeatureLevel=$xml.System.ME_Firmware_Information.ME_SKU
-                $MEData.Provisioned=$xml.System.ME_Firmware_Information.ME_Provisioning_State
 
+                #IS75DT 1.0.3 does now longer contain the entry SKU in the XML. Still in the normal output though...
+                $MEData.Provisioned=$xml.System.ME_Firmware_Information.ME_Provisioning_State
                 $MEData.VulnerableText=$xml.System.System_Status.System_Risk
                 $MEData.ExposedText=$xml.System.System_Status.System_Exposure
 
@@ -2301,16 +2342,12 @@ function Update-MEFirmware()
                     $MEData.DriverInstalled=$true
                 }    
 
-                if ( $MEData.VulnerableText -eq "Vulnerable" )
+                #As of version 1.0.3, the vulnerable status is a sentence and the important part is "is vulnerable / is not vulnerable"
+                if ( Test-String $MEData.VulnerableText -Contains "is vulnerable" ) 
                 {
                     $MEData.Vulnerable=$true
                 }
-                
-                if ( $MEData.ExposedText -eq "Exposed" )
-                {
-                    $MEData.Exposed=$true
-                }
-               
+                             
                 $MEData.Parsed=$true
                 write-host "Reading finished"
 
@@ -2326,7 +2363,6 @@ function Update-MEFirmware()
                 write-host "Management Engine information:"
                 write-host " "
                 write-host "  Firmware Version ..: $($MEData.VersionText)"
-                #write-host "  Feature Level .....: $($MEData.FeatureLevel)"
                 write-host "  Provisioned .......: $($MEData.Provisioned)"
                 write-host " "
 
@@ -2437,11 +2473,14 @@ function Update-MEFirmware()
 function Write-HostSection()
 {
  param(
-  [Parameter(Mandatory=$False,ValueFromPipeline=$True)]
+  [Parameter(Mandatory=$False, ValueFromPipeline=$False)]
   [string]$Start="",
 
-  [Parameter(Mandatory=$False,ValueFromPipeline=$True)]
-  [string]$End=""
+  [Parameter(Mandatory=$False, ValueFromPipeline=$False)]
+  [string]$End="",
+
+  [Parameter(Mandatory=$False, ValueFromPipeline=$False)]
+  [switch]$NoEmptyLineAtEnd
  )
 
  $charlength=65
@@ -2468,11 +2507,16 @@ function Write-HostSection()
  }
 
  write-host $output
+
  
- #Add a single empty line if no name was given
+ #Add a single empty line if this is an END section
  if ( Test-String -HasData $End )
  {
-    write-host "   "
+    #Only write the empty line if NoEmptyLine is NOT set (=False)
+    if ( $NoEmptyLineAtEnd -eq $False )
+    {
+        write-host "   "
+    }
  }
 
 }

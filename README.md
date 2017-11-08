@@ -64,7 +64,7 @@ desktops, notebooks, and workstations.*
 * BIOS updates file for the models you want to support
 	* Search http://www.hp.com/drivers for "(Model) BIOS" to locate them 
 * TPM update files if a TPM specification or TPM firmware update is desired 
-    * See [HP C05381064 advisory](https://support.hp.com/en-us/document/c05381064) and [TPM Firmware SoftPaq](https://ftp.hp.com/pub/softpaq/sp78501-79000/sp78910.exe)
+    * See [HP C05381064 advisory (TPM 2.0 Updates)](https://support.hp.com/en-us/document/c05381064) and [HP HPSBHF03568 advisory (Infineon TPM Security Update)](https://support.hp.com/us-en/document/c05792935)
 * [Intel-SA-00075 Detection Tool](https://downloadcenter.intel.com/download/26755) stored in the folder ``ISA75DT-[Version]`` for Management Engine (ME) firmware tasks
     * For ME firmware files, see [HPSBHF03557 Advisory]( http://www8.hp.com/us/en/intelmanageabilityissue.html) or the driver download page from HP for the model
 * Note: Several BIOS, TPM and ME files for the example models that are included in ``BiosSledgehammer.zip`` can be downloaded automatically - see [Installation](#install).  
@@ -297,27 +297,26 @@ To detect if an TPM update is required, two versions need to be checked: The TPM
 
 The reason is that all TPM firmware is developed by 3rd parties so a change from TPM 1.2 to 2.0 can result in a LOWER firmware version when the vendor is changed (see [this article on the Dell wiki]( http://en.community.dell.com/techcenter/enterprise-client/w/wiki/11850.how-to-change-tpm-modes-1-2-2-0) – TPM Spec 1.2 is firmware 5.81 from WEC, TPM Spec 2.0 is firmware 1.3 from NTC). BIOS Sledgehammer checks both versions and if any of those two are higher than the current device reports, a TPM update is started. 
 
-The current TPM firmware version of the device is retrieved and it is checked if the settings file contains an entry for this firmware version. Given that the current device has TPM firmware 6.40, the update can be performed as an entry for this version exists (**6.40 == Firmware\TPM12....**). However, if the device would have firmware 6.22 the update would fail because no entry for this version exists. 
+The current TPM firmware version of the device is retrieved and it is checked if the settings file contains an entry for this firmware version. Given that the current device has TPM firmware 6.40, the update can be performed as an entry for this version exists (**6.40 == Firmware\TPM12....**). However, if the device would have firmware 6.22 the update would fail because no entry for this version exists.
 
-The TPM update also requires that BitLocker is completely turned off (as any BitLocker keys are lost during the upgrade), so BIOS Sledgehammer will check if the system drive C: is encrypted with BitLocker and starts an automatic decryption before executing the update. This works for Windows 10, but fails in Windows 7 because the required BitLocker PowerShell module does not exist. 
+The TPM update also requires that BitLocker is turned off (as any BitLocker keys are lost during the upgrade), so BIOS Sledgehammer will check if the system drive C: is encrypted with BitLocker and starts an automatic decryption before executing the update. This works for Windows 10, but fails in Windows 7 as the required BitLocker PowerShell module does not exist. 
 
 Once this is all set and done, the source folder is copied to %TEMP% (to avoid any network issues) and the process is started from there.
 
-**Note**: BIOS Sledgehammer enforces that the source files are stored in a sub folder of the [model folder](#modelsfolder) called ``TPM-<VERSION>``. If the desired TPM firmware version is ``7.41``, the folder name would be ``\TPM-7.41\``. 
+**Note:** BIOS Sledgehammer enforces that the source files are stored in a sub folder of the [model folder](#modelsfolder) called ``TPM-<VERSION>``. If the desired TPM firmware version is ``7.41``, the folder name would be ``\TPM-7.41\``. 
 
 Because the update utility sometimes restarts itself, the execution is paused until the process noted in COMMAND is no longer running. If any **.log* file was generated in the local folder, the content is added to the normal BIOS Sledgehammer log. A restart is requested after that because the actual update process happens during POST, after the restart. 
 
 If anything goes wrong during the process, an error is generated. 
 
+### Special handling for 6.41 firmware
 
-## <a name="tpmspecialnotice">TPM Update - Special handling</a>
-
-BIOS Sledgehammer is also able to handle the special case of the 6.41.x firmware. This firmware comes in two different versions:
+BIOS Sledgehammer is able to handle the special case of the 6.41.x firmware. This firmware comes in two different versions:
 
  * 6.41.**197** is used for devices that have a TPM 1.2 by default
  * 6.41.**198** is used for devices that were downgraded from TPM 2.0 to TPM 1.2
 
-The problem is that the [Win32_TPM](https://msdn.microsoft.com/en-us/library/windows/desktop/aa376484(v=vs.85).aspx) CIM class does not provide the BUILD part in the ``ManufacturerVersion`` field. Therefore, it can not be detected which 6.41 firmware is currently active. 
+The problem is that the [Win32_TPM](https://msdn.microsoft.com/en-us/library/windows/desktop/aa376484(v=vs.85).aspx) CIM class does not provide the BUILD number (.197 or .198) in the ``ManufacturerVersion`` field. Therefore, it can not be detected which 6.41 firmware is currently active. 
 
 If the firmware file specified for the update does not match exactly, the TPM will reject the update (Full details in [Issue #9](https://github.com/texhex/BiosSledgehammer/issues/9)).
 
@@ -328,7 +327,38 @@ To support this special case, it is possible to define two entries for the same 
 6.41.B == Firmware\TPM12_6.41.198.0_to_TPM20_7.61.2785.0.BIN
 ```
 
-In this case, BIOS Sledgehammer will first try to flash the first file. If the TPM update executable returns a *Wrong firmware file* error, the second firmware file is tried.
+BIOS Sledgehammer will first try to flash the first file (*6.41.A). If the TPM update executable returns a *Wrong firmware file* error, the second firmware file (*6.41.B*) is tried.
+
+### BIOS setting dependencies
+
+Newer BIOS version for the EliteBook series (G3 or upward) do not allow TPM updates when either [Intel Software Guard Extensions aka "SGX"](https://en.wikipedia.org/wiki/Software_Guard_Extensions) or [Intel Trusted Execution Technology aka "TXT"](https://en.wikipedia.org/wiki/Trusted_Execution_Technology) are activated.
+
+To support this, these BIOS settings can be disabled just before the TPM update takes place using the file `` TPM-BIOS-Settings.txt``. If no TPM update is required, no changes are made. The file works exactly the same as described in [BIOS Settings](#biossettings) and should only contain the changes that are required for the TPM update to succeed.
+ 
+```
+# EliteBook 8x0 G4 BIOS Settings required for TPM update
+# When these options are activated, no TPM firmware can be installed
+
+Intel Software Guard Extensions (SGX) == Disable
+Trusted Execution Technology (TXT) == Disable
+```
+
+**NOTE:** It is perfectly fine to set a setting here differently than in [BIOS Settings](#biossettings). For example, **Trusted Execution Technology (TXT)** needs to be *DISABLE* here (as this is required to allow an TPM update) but can be set to *ENABLE* in [BIOS Settings](#biossettings). The later is executed after the TPM update so the settings there will be in effect. 
+
+
+### Disable automatic BitLocker decryption
+
+In cases of updates for in-use machines, the automatic decryption of BitLocker that BIOS Sledgehammer performs might not be desired as this will require a full roll-in of BitLocker later on. 
+
+It is possible that a script (executed before BIOS Sledgehammer) removes the TPM protector and then pauses BitLocker protection. Adding the parameter **IgnoreBitLocker==Yes** in ``TPM-Update.txt`` will cause BIOS Sledgehammer to ignore BitLocker all together and not start a full decryption. 
+ 
+
+```
+# Ignore BitLocker - If activated, no automatic BitLocker decryption will take place
+IgnoreBitLocker==Yes
+```
+
+:warning: **WARNING!** Please take extra care when using this parameter! When removing the TPM protector using ``manager-bde.exe`` and forget to also specify the **RebootCount** parameter, you can lock yourself out of your device. For full details, see the [manage-bde docs](https://technet.microsoft.com/en-us/library/ff829848(v=ws.11).aspx#BKMK_disableprot). You have been warned. 
 
 
 ## <a name="biospassword">BIOS Password</a>
@@ -414,3 +444,6 @@ If you encounter a bug, please start BIOS Sledgehammer with the option -Verbose 
 ``BiosSledgehammer.ps1`` and ``MPSXM.psm1``: Copyright © 2015-2017 [Michael Hex](http://www.texhex.info/). Licensed under the **Apache 2 License**. For details, please see LICENSE.txt.
 
 All HP related files (BCU, BIOS, TPM etc.) are © Copyright 2012–2015 Hewlett-Packard Development Company, L.P. and/or other HP companies. These files are licensed under different terms. 
+
+All Intel related files (SA-00075) are © Copyright Intel. These files are licensed under different terms. 
+
