@@ -21,7 +21,46 @@ param(
   [switch]$WaitAtEnd=$False,
 
   [Parameter(Mandatory=$False)]
-  [switch]$ActivateUEFIBoot=$False
+  [switch]$ActivateUEFIBoot=$False,
+
+#the following parameters have been added to allow for more flexabality in the location of the resources.
+  [Parameter(Mandatory=$False,HelpMessage="File path to and including BiosConfigUtility64.exe")]
+  [ValidateScript({
+       if( -Not ($_ | Test-Path) -and (!($_ -like "*BiosConfigUtility64.exe")) ){
+            throw "BiosConfigUtility64.exe not found in the provided path"
+       }
+       return $true
+  })]
+  [System.IO.FileInfo]$BCUPath,
+
+  [Parameter(Mandatory=$False,HelpMessage="File path to and including Intel-SA-00075-console.exe file.")]
+  [ValidateScript({
+       if( -Not ($_ | Test-Path) -and (!($_ -like "*Intel-SA-00075-console.exe")) ){
+            throw "Intel-SA-00075-console.exe not found in the provided path"
+       }
+       return $true
+  })]
+  [System.IO.FileInfo]$ISA75Path,
+
+
+  [Parameter(Mandatory=$False,HelpMessage="Directoy path to the directory with the password .bin files")]
+  [ValidateScript({
+       if( -Not ($_ | Test-Path -include *.bin) ){
+            throw "No .bin password files found"
+       }
+       return $true
+  })]
+  [System.IO.FileInfo]$PwdFilesPath,
+
+  [Parameter(Mandatory=$False,HelpMessage="Directory path the here the configurations are stored")]
+  [ValidateScript({
+       if( -Not ($_ | Test-Path) ){
+            throw "Folder not found"
+       }
+       return $true
+  })]
+  [System.IO.FileInfo]$ModelsPath
+
 )
 
 
@@ -85,31 +124,63 @@ $banner=@"
 $banner=$banner -replace "@@VERSION@@", $scriptversion
 write-host $banner
 
+
+if ($BCUPath)
+{
+#if the -BCUPath is set use the user provided path
+Set-Variable BCU_EXE_SOURCE "$BCUPath" -option ReadOnly -Force
+}
+else
+{
 #Configure which BCU version to use 
 #Version 2.45 and upwards: BCU 4.0.21.1
 Set-Variable BCU_EXE_SOURCE "$PSScriptRoot\BCU-4.0.21.1\BiosConfigUtility64.exe" -option ReadOnly -Force
   #for testing if the arguments are correctly sent to BCU
   #Set-Variable BCU_EXE "$PSScriptRoot\4.0.15.1\EchoArgs.exe" -option ReadOnly -Force
+}
 
+
+if($ISA75Path)
+{
+#if the -ISA75Path is set then the use the user provided path 
+Set-Variable ISA75DT_EXE_SOURCE "$ISA75Path" -option ReadOnly -Force
+}
+else
+{
 #Configute which ISA00075 version to use
 #Set-Variable ISA75DT_EXE_SOURCE "$PSScriptRoot\ISA75DT-1.0.1.39\Windows\Intel-SA-00075-console.exe" -option ReadOnly -Force
 Set-Variable ISA75DT_EXE_SOURCE "$PSScriptRoot\ISA75DT-1.0.3.215\Intel-SA-00075-console.exe" -option ReadOnly -Force
-
+}
 
 #For performance issues (AV software that keeps scanning EXEs from network) we copy BCU locally
 #File will be deleted when the script finishes
 Set-Variable BCU_EXE "" -Force
 
+if ($PwdFilesPath)
+{
+# if -PwdFilesPath is set use the user provided path
+Set-Variable PWDFILES_PATH "$PwdFilesPath" -option ReadOnly -Force
+}
+else
+{
 #Path to password files (need to have extension *.bin)
 Set-Variable PWDFILES_PATH "$PSScriptRoot\PwdFiles" -option ReadOnly -Force
-
+}
 #Will store the currently used password file (copied locally)
 #File will be deleted when the script finishes
 Set-Variable CurrentPasswordFile "" -Force
 
+
+if ($ModelsPath)
+{
+# if -ModelsPath is set use the user provided path for the source of the configuration files 
+Set-Variable MODELS_PATH "$ModelsPath" -option ReadOnly -Force
+}
+else
+{
 #Path to model files
 Set-Variable MODELS_PATH "$PSScriptRoot\Models" -option ReadOnly -Force
-
+}
 #Common exit code
 Set-Variable ERROR_SUCCESS_REBOOT_REQUIRED 3010 -option ReadOnly -Force
 
